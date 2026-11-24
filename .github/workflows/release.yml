@@ -1,0 +1,131 @@
+name: Release
+
+# Compila os pacotes do PostPilot e publica a Release `v<versão>` deste
+# repositório. Roda quando o arquivo VERSION muda (quem o atualiza é o
+# repositório do código, a cada versão nova) ou à mão, em Actions > Release >
+# Run workflow. Se a Release já existe, termina em segundos.
+#
+# O código vem do repositório privado, lido com a chave do segredo
+# SOURCE_DEPLOY_KEY (só leitura). Este arquivo é gerado: a origem é
+# packaging/releases-repo/ no repositório do código.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - VERSION
+      - .github/workflows/release.yml
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ github.token }}
+  SOURCE_REPO: tiagosouzaf/postpilot
+
+jobs:
+  release:
+    name: Pacotes e Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versão
+        id: v
+        run: |
+          version=$(sed -n 's/^version=//p' VERSION)
+          sha=$(sed -n 's/^sha=//p' VERSION)
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ $sha =~ ^[0-9a-f]{40}$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "A Release v$version já existe; nada a fazer." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Vou publicar a v$version." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Baixar o código
+        if: steps.v.outputs.exists == 'false'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ steps.v.outputs.sha }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          path: src
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.v.outputs.exists == 'false'
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Ferramentas de empacotamento
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 wixl msitools \
+            squashfs-tools libarchive-tools zstd
+          # O zig liga o binário de Linux contra uma glibc antiga (2.31).
+          pip install --user --break-system-packages ziglang==0.17.1
+          cargo install cargo-zigbuild --locked --version 0.24.1
+
+      - name: cargo xtask dist
+        if: steps.v.outputs.exists == 'false'
+        working-directory: src
+        env:
+          # O log deste repositório é público: sem a lista do que compila.
+          CARGO_TERM_QUIET: "true"
+        run: cargo xtask dist
+
+      - name: Publicar a Release
+        if: steps.v.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          cp NOTES.md "$RUNNER_TEMP/changes.md"
+          cd src/target/packages
+          # Os seis pacotes têm de existir; sem um deles, não publica.
+          files=(
+            "postpilot-$VERSION-linux-x86_64.tar.gz"
+            "postpilot-$VERSION-1-x86_64.pkg.tar.zst"
+            "postpilot_${VERSION}_amd64.deb"
+            "PostPilot-$VERSION-x86_64.AppImage"
+            "PostPilot-$VERSION-windows-x86_64.zip"
+            "PostPilot-$VERSION-x86_64.msi"
+          )
+          for f in "${files[@]}"; do test -s "$f"; done
+          sha256sum -c SHA256SUMS
+          # PKGBUILD e .SRCINFO do AUR, já com o SHA-256 do tar.gz desta Release.
+          aur="tf-postpilot-bin-$VERSION-aur.tar.gz"
+          tar -czf "$aur" -C aur tf-postpilot-bin
+          cat "$RUNNER_TEMP/changes.md" > notes.md
+          cat >> notes.md <<NOTES
+
+          ## Arquivos
+
+          | Arquivo | Para |
+          |---|---|
+          | \`postpilot-$VERSION-linux-x86_64.tar.gz\` | Linux (binário genérico; usado pelo pacote do AUR) |
+          | \`postpilot-$VERSION-1-x86_64.pkg.tar.zst\` | Arch Linux (\`sudo pacman -U\`) |
+          | \`postpilot_${VERSION}_amd64.deb\` | Debian / Ubuntu |
+          | \`PostPilot-$VERSION-x86_64.AppImage\` | Qualquer Linux |
+          | \`PostPilot-$VERSION-windows-x86_64.zip\` | Windows (portátil) |
+          | \`PostPilot-$VERSION-x86_64.msi\` | Windows (instalador) |
+          | \`SHA256SUMS\` | Somas SHA-256 |
+          | \`$aur\` | PKGBUILD e .SRCINFO do pacote \`tf-postpilot-bin\` do AUR |
+          NOTES
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "PostPilot $VERSION" \
+            --notes-file notes.md \
+            "${files[@]}" SHA256SUMS "$aur"
