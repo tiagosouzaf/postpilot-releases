@@ -28,7 +28,7 @@ Opções vão depois de `bash -s --`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tiagosouzaf/postpilot-releases/main/install.sh | bash -s -- --appimage   # AppImage mesmo em Arch/Debian
-curl -fsSL https://raw.githubusercontent.com/tiagosouzaf/postpilot-releases/main/install.sh | bash -s -- --version 0.2.71
+curl -fsSL https://raw.githubusercontent.com/tiagosouzaf/postpilot-releases/main/install.sh | bash -s -- --version 0.2.72
 curl -fsSL https://raw.githubusercontent.com/tiagosouzaf/postpilot-releases/main/install.sh | bash -s -- --uninstall
 ```
 

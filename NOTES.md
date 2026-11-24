@@ -1,3 +1,3 @@
 ## O que mudou
 
-- Distribuição pelo repositório público postpilot-releases (0.2.71)
+- RabbitMQ: tela de filas em tabela com pesquisa, filtros e agrupamento (0.2.72)
